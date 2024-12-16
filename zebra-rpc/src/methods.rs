@@ -6,14 +6,9 @@
 //! Some parts of the `zcashd` RPC documentation are outdated.
 //! So this implementation follows the `zcashd` server and `lightwalletd` client implementations.
 
-use std::{
-    collections::{HashMap, HashSet},
-    fmt::Debug,
-    hash::Hash,
-    sync::Arc,
-};
+use std::{collections::HashSet, fmt::Debug, hash::Hash, sync::Arc};
 
-use chrono::Utc;
+use chrono::{TimeZone, Utc};
 use futures::{stream::FuturesOrdered, FutureExt, StreamExt, TryFutureExt};
 use hex::{FromHex, ToHex};
 use indexmap::IndexMap;
@@ -28,7 +23,10 @@ use zebra_chain::{
     amount::{Amount, NonNegative, COIN},
     block::{self, Height, SerializedBlock},
     chain_tip::{ChainTip, NetworkChainTipHeightEstimator},
-    parameters::{ConsensusBranchId, Network, NetworkUpgrade},
+    parameters::{
+        constants::{DEFAULT_POST_BLOSSOM_EXPIRY_DELTA, DEFAULT_PRE_BLOSSOM_TX_EXPIRY_DELTA},
+        ConsensusBranchId, Network, NetworkUpgrade,
+    },
     serialization::{ZcashDeserialize, ZcashSerialize},
     subtree::NoteCommitmentSubtreeIndex,
     transaction::{self, LockTime, SerializedTransaction, Transaction, UnminedTx},
@@ -242,31 +240,32 @@ pub trait Rpc {
         limit: Option<NoteCommitmentSubtreeIndex>,
     ) -> BoxFuture<Result<GetSubtrees>>;
 
-    /// Returns the hex string of the raw transaction based on the given inputs `transactions`, `addresses`,
-    /// `locktime` and `expiryheight`.
+    /// Returns the hex string of the raw transaction based on the given inputs.
     ///
-    /// zcashd reference: [`z_create_raw_transaction`](https://zcash.github.io/rpc/createrawtransaction.html)
+    /// zcashd reference: [`createrawtransaction`](https://zcash.github.io/rpc/createrawtransaction.html)
     /// method: post
     /// tags: blockchain
     ///
     /// # Parameters
     ///
-    /// - `transactions`: (string, required) A json array of json objects
-    /// - `addresses`: (string, required) A json object object with addresses as keys and amounts as values.
-    ///   ["address": x.xxx] (numeric, required) They key is the Zcash address, the value is the ZEC amount
-    /// - `locktime`: (numeric, optional, default=0) Raw locktime. Non-0 value also locktime-actives inputs
-    /// - `expiryheight`: (numeric, optional, default=nextblockheight+20 (pre-Blossom) or nextblockheight+40 (post-Blossom)) Expiry height of
-    ///    transaction (if Overwinter is active)
+    /// - `tx_inputs`: (string, required) A json array of json objects.
+    /// - `address_amounts`: (json object, required, example={\"tmYXBYJj1K7vhejSec5osXK2QsGa5MTisUQ\": 1.0}) Address and amount pairs.
+    /// - `locktime`: (numeric, optional, default=0) Raw locktime. Non-0 value locktime-actives inputs.
+    /// - `expiryheight`: (numeric, optional) Transaction expiry height, defaults to nextblockheight+[20|40]
     ///
     /// # Notes
+    ///
     /// The transaction's inputs are not signed, and it is not stored in the wallet or transmitted
     /// to the network.
+    ///
     /// Transaction IDs for inputs are in hex format
+    ///
+    /// The default expiry height is nextblockheight+20 pre-Blossom, or nextblockheight+40 post-Blossom.
     #[rpc(name = "createrawtransaction")]
     fn create_raw_transaction(
         &self,
-        transactions: Vec<TxInput>,
-        addresses: HashMap<String, f64>,
+        tx_inputs: Vec<TxInput>,
+        address_amounts: Vec<(String, f64)>,
         locktime: Option<u32>,
         expiryheight: Option<u32>,
     ) -> BoxFuture<Result<String>>;
@@ -1043,8 +1042,8 @@ where
 
     fn create_raw_transaction(
         &self,
-        transactions: Vec<TxInput>,
-        addresses: HashMap<String, f64>,
+        tx_inputs: Vec<TxInput>,
+        address_amounts: Vec<(String, f64)>,
         locktime: Option<u32>,
         expiryheight: Option<u32>,
     ) -> BoxFuture<Result<String>> {
@@ -1052,13 +1051,33 @@ where
         let latest_chain_tip = self.latest_chain_tip.clone();
 
         async move {
-            let tip_height = best_chain_tip_height(&latest_chain_tip).map_server_error()?;
+            if tx_inputs.is_empty() {
+                return Err(Error::invalid_params("empty inputs array")).map_server_error();
+            }
 
-            let lock_time = if let Some(lock_time) = locktime {
-                LockTime::Height(block::Height(lock_time))
+            if address_amounts.is_empty() {
+                return Err(Error::invalid_params("empty address to amounts mapping"));
+            }
+
+            if address_amounts.iter().any(|(_, amount)| *amount <= 0.0) {
+                return Err(Error::invalid_params("invalid amount, out of range - cannot be zero or negative"));
+            }
+
+            let lock_time = if let Some(lock_time_as_u32) = locktime {
+                if lock_time_as_u32 >= LockTime::MIN_TIMESTAMP as u32 {
+                        LockTime::Time(
+                            Utc.timestamp_opt(lock_time_as_u32 as i64, 0)
+                                .single()
+                                .expect("in-range number of seconds and valid nanosecond")
+                        )
+                } else {
+                    LockTime::Height(block::Height(lock_time_as_u32))
+                }
             } else {
-                LockTime::Height(block::Height(0))
+               LockTime::unlocked()
             };
+
+            let tip_height = best_chain_tip_height(&latest_chain_tip).map_server_error()?;
 
             // Use next block height if exceeds MAX_EXPIRY_HEIGHT or is beyond tip
             let next_block_height = tip_height.0 + 1;
@@ -1068,28 +1087,39 @@ where
             let expiry_height_as_u32 = if let Some(expiry_height) = expiryheight {
                 if next_network_upgrade < NetworkUpgrade::Overwinter {
                     return Err(Error::invalid_params(
-                        "invalid parameter, expiryheight can only be used if Overwinter is active when the transaction is mined"
+                        "expiryheight can only be used if Overwinter is active when the transaction is mined"
                     )).map_server_error();
                 }
 
                 if block::Height(expiry_height) >= block::Height::MAX_EXPIRY_HEIGHT {
                     return Err(Error::invalid_params(
-                        format!("Invalid parameter, expiryheight must be nonnegative and less than {:?}.", 
+                        format!("expiryheight must be nonnegative and less than {:?}.", 
                             block::Height::MAX_EXPIRY_HEIGHT)
                     ));
                 }
 
-                // DoS mitigation: reject transactions expiring soon (as is done in zcashd)
-                if expiry_height != 0 && next_block_height + block::Height::BLOCK_EXPIRY_HEIGHT_THRESHOLD > expiry_height {
+                // DoS mitigation: reject transactions expiring soon
+                // https://github.com/zcash/zcash/blob/99ad6fdc3a549ab510422820eea5e5ce9f60a5fd/src/rpc/rawtransaction.cpp#L738
+                if expiry_height != 0 && next_block_height + block::Height::TX_EXPIRING_SOON_THRESHOLD > expiry_height {
                     return Err(Error::invalid_params(
-                        format!("invalid parameter, expiryheight should be at least {} to avoid transaction expiring soon", 
-                            next_block_height + block::Height::BLOCK_EXPIRY_HEIGHT_THRESHOLD)
+                        format!("expiryheight should be at least {} to avoid transaction expiring soon", 
+                            next_block_height + block::Height::TX_EXPIRING_SOON_THRESHOLD)
                     ));
                 }
 
                 expiry_height
             } else {
-                next_block_height
+                    let mut default_expiry_height = next_block_height + if current_upgrade >= NetworkUpgrade::Blossom {
+                        DEFAULT_POST_BLOSSOM_EXPIRY_DELTA
+                    } else {
+                        DEFAULT_PRE_BLOSSOM_TX_EXPIRY_DELTA
+                    };
+                    let next_activation_height = current_upgrade.next_upgrade();
+                    if let Some(next_height) = next_activation_height {
+                        default_expiry_height = std::cmp::min(default_expiry_height, next_height.activation_height(&network).unwrap().0 - 1);
+                    }
+
+                    default_expiry_height
             };
             // Set a default sequence based on the lock time
             let default_tx_input_sequence = if lock_time == LockTime::Height(block::Height(0)) {
@@ -1099,13 +1129,13 @@ where
             };
 
             // Handle tx inputs
-            let tx_inputs: Vec<Input> = transactions
+            let tx_inputs: Vec<Input> = tx_inputs
                 .iter()
                 .map(|input| {
                     Ok(Input::PrevOut {
                         outpoint: OutPoint {
                             hash: transaction::Hash::from_hex(&input.txid).map_err(|_| {
-                                Error::invalid_params(format!("invalid parameter, transaction id {} is an invalid hex string", input.txid))
+                                Error::invalid_params(format!("transaction id {} is an invalid hex string", input.txid))
                             })?,
                             index: input.vout,
                         },
@@ -1118,17 +1148,28 @@ where
             // Handle tx outputs
             let mut tx_outputs: Vec<Output> = Vec::new();
 
+            // Check if addresses contained in params contain duplicates
+            let mut seen_addresses = HashSet::new();
+            for (address, _) in address_amounts.clone() {
+                if !seen_addresses.insert(address.clone()) {
+                    return Err(Error::invalid_params(
+                        format!("duplicated address: {}", address)
+                    )).map_server_error();
+                }
+            }
+
             // Check if addresses contained in params are valid
-            let address_strings = AddressStrings { addresses: addresses.clone().keys().cloned().collect() };
+            let address_strings = AddressStrings { addresses: seen_addresses.into_iter().collect() };
             let _result = address_strings.valid_addresses().map_err(|e| e.to_string()).map_server_error()?;
 
-            for (address, amount) in addresses {
+            for (address, amount) in address_amounts {
                 let address = address.parse().map_server_error()?;
 
                 let lock_script = match address {
                     Address::PayToScriptHash { network_kind: _, script_hash } => {
                         let mut script_bytes = vec![];
                         script_bytes.push(OpCode::Hash160 as u8);
+                        script_bytes.push(0x14);
                         script_bytes.extend_from_slice(&script_hash);
                         script_bytes.push(OpCode::Equal as u8);
                         Script::new(&script_bytes)
@@ -1137,6 +1178,7 @@ where
                         let mut script_bytes = vec![];
                         script_bytes.push(OpCode::Dup as u8);
                         script_bytes.push(OpCode::Hash160 as u8);
+                        script_bytes.push(0x14);
                         script_bytes.extend_from_slice(&pub_key_hash);
                         script_bytes.push(OpCode::EqualVerify as u8);
                         script_bytes.push(OpCode::CheckSig as u8);
@@ -1156,45 +1198,23 @@ where
             }
 
             let tx = match current_upgrade {
-                NetworkUpgrade::Genesis | NetworkUpgrade::BeforeOverwinter => Transaction::V1 {
-                    inputs: tx_inputs,
-                    outputs: tx_outputs,
-                    lock_time,
-                },
-                NetworkUpgrade::Overwinter => Transaction::V3 {
-                    inputs: tx_inputs,
-                    outputs: tx_outputs,
-                    lock_time,
-                    expiry_height: block::Height(expiry_height_as_u32 + 20),
-                    joinsplit_data: None,
-                },
-                NetworkUpgrade::Sapling => Transaction::V4 {
-                    inputs: tx_inputs,
-                    outputs: tx_outputs,
-                    lock_time,
-                    expiry_height: block::Height(expiry_height_as_u32 + 20),
-                    joinsplit_data: None,
-                    sapling_shielded_data: None,
-                },
-                NetworkUpgrade::Blossom | NetworkUpgrade::Heartwood | NetworkUpgrade::Canopy => {
-                    Transaction::V4 {
-                        inputs: tx_inputs,
-                        outputs: tx_outputs,
-                        lock_time,
-                        expiry_height: block::Height(expiry_height_as_u32 + 40),
-                        joinsplit_data: None,
-                        sapling_shielded_data: None,
-                    }
-                }
                 NetworkUpgrade::Nu5 | NetworkUpgrade::Nu6 => Transaction::V5 {
                     network_upgrade: current_upgrade,
                     lock_time,
-                    expiry_height: block::Height(expiry_height_as_u32 + 40),
+                    expiry_height: block::Height(expiry_height_as_u32),
                     inputs: tx_inputs,
                     outputs: tx_outputs,
                     sapling_shielded_data: None,
                     orchard_shielded_data: None,
                 },
+                _ => Transaction::V4 {
+                    inputs: tx_inputs,
+                    outputs: tx_outputs,
+                    lock_time,
+                    expiry_height: block::Height(expiry_height_as_u32),
+                    joinsplit_data: None,
+                    sapling_shielded_data: None,
+                }
             };
 
             Ok(hex::encode(tx.zcash_serialize_to_vec().map_server_error()?))
@@ -1689,7 +1709,7 @@ impl AddressStrings {
             .into_iter()
             .map(|address| {
                 address.parse().map_err(|error| {
-                    Error::invalid_params(format!("invalid address {address:?}: {error}"))
+                    Error::invalid_params(format!("Invalid Zcash address \"{address}\": {error}"))
                 })
             })
             .collect::<Result<_>>()?;

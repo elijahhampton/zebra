@@ -78,8 +78,13 @@ impl Height {
     pub const MAX_EXPIRY_HEIGHT: Height = Height(499_999_999);
 
     /// The number of blocks within expiry height when a tx is considered
-    /// to be expiring soon .
-    pub const BLOCK_EXPIRY_HEIGHT_THRESHOLD: u32 = 3;
+    /// to be expiring soon.
+    /// <https://github.com/zcash/zcash/blob/master/src/main.h>
+    pub const TX_EXPIRING_SOON_THRESHOLD: u32 = 3;
+
+    // The minimum value which is invalid for expiry height.
+    /// <https://github.com/zcash/zcash/blob/master/src/consensus/consensus.h>
+    pub const TX_EXPIRY_HEIGHT_THRESHOLD: u32 = 500_000_000;
 
     /// Returns the next [`Height`].
     ///

@@ -455,7 +455,6 @@ async fn rpc_createrawtransaction() {
     );
 
     // Test basic transaction creation
-
     let tx_future = rpc.create_raw_transaction(
         vec![TxInput {
             txid: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
@@ -463,8 +462,7 @@ async fn rpc_createrawtransaction() {
             sequence: None,
         }],
         {
-            let mut addresses = HashMap::new();
-            addresses.insert("t3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd".to_string(), 1.0);
+            let addresses = vec![("t3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd".to_string(), 1.0)];
             addresses
         },
         None,
@@ -479,7 +477,6 @@ async fn rpc_createrawtransaction() {
     );
 
     // Test transaction with invalid input transaction id
-
     let tx_future = rpc.create_raw_transaction(
         vec![TxInput {
             txid: "00000".to_string(),
@@ -487,8 +484,7 @@ async fn rpc_createrawtransaction() {
             sequence: None,
         }],
         {
-            let mut addresses = HashMap::new();
-            addresses.insert("t3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd".to_string(), 1.0);
+            let addresses = vec![("t3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd".to_string(), 1.0)];
             addresses
         },
         None,
@@ -501,13 +497,9 @@ async fn rpc_createrawtransaction() {
         response.is_err(),
         "RPC should not return transaction hash with invalid transaction id in input"
     );
-    assert!(response
-        .unwrap_err()
-        .message
-        .contains("invalid parameter, transaction id"));
+    assert!(response.unwrap_err().message.contains("transaction id"));
 
     // Test invalid inputs: invalid transparent address in HashMap
-
     let tx_future = rpc.create_raw_transaction(
         vec![TxInput {
             txid: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
@@ -515,8 +507,7 @@ async fn rpc_createrawtransaction() {
             sequence: None,
         }],
         {
-            let mut addresses = HashMap::new();
-            addresses.insert("t3Vz2".to_string(), 1.0);
+            let addresses = vec![("t3Vz2".to_string(), 1.0)];
             addresses
         },
         None,
@@ -535,7 +526,6 @@ async fn rpc_createrawtransaction() {
         .contains("t-addr decoding error"));
 
     // Test inputs containing a valid locktime
-
     let tx_future = rpc.create_raw_transaction(
         vec![TxInput {
             txid: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
@@ -543,8 +533,7 @@ async fn rpc_createrawtransaction() {
             sequence: None,
         }],
         {
-            let mut addresses = HashMap::new();
-            addresses.insert("t3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd".to_string(), 1.0);
+            let addresses = vec![("t3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd".to_string(), 1.0)];
             addresses
         },
         Some(100),
@@ -559,7 +548,6 @@ async fn rpc_createrawtransaction() {
     );
 
     // Test inputs containing a valid expiry_height
-
     let expiry_height = fake_tip_height.0 + 40;
 
     let tx_future = rpc.create_raw_transaction(
@@ -569,8 +557,7 @@ async fn rpc_createrawtransaction() {
             sequence: None,
         }],
         {
-            let mut addresses = HashMap::new();
-            addresses.insert("t3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd".to_string(), 1.0);
+            let addresses = vec![("t3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd".to_string(), 1.0)];
             addresses
         },
         None,
@@ -584,8 +571,7 @@ async fn rpc_createrawtransaction() {
         "RPC with valid expiry_height should succeed"
     );
 
-    // Test inputs containing an invalid expiry_height: expiry_height is not more than block::Height::BLOCK_EXPIRY_HEIGHT_THRESHOLD
-
+    // Test inputs containing an invalid expiry_height: expiry_height is not more than TX_EXPIRY_HEIGHT_THRESHOLD
     let expiry_height = fake_tip_height.0 + 1;
 
     let tx_future = rpc.create_raw_transaction(
@@ -595,8 +581,7 @@ async fn rpc_createrawtransaction() {
             sequence: None,
         }],
         {
-            let mut addresses = HashMap::new();
-            addresses.insert("t3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd".to_string(), 1.0);
+            let addresses = vec![("t3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd".to_string(), 1.0)];
             addresses
         },
         None,
@@ -612,10 +597,9 @@ async fn rpc_createrawtransaction() {
     assert!(response
         .unwrap_err()
         .message
-        .contains("invalid parameter, expiryheight should be at least"));
+        .contains("expiryheight should be at least"));
 
-    // Test inputs containing an invalid expiry_height: expiry_height greater than block::Height::MAX_EXPIRY_HEIGHT
-
+    // Test inputs containing an invalid expiry_height: expiry_height greater than MAX_EXPIRY_HEIGHT
     let expiry_height = Height::MAX_EXPIRY_HEIGHT.0;
 
     let tx_future = rpc.create_raw_transaction(
@@ -625,8 +609,7 @@ async fn rpc_createrawtransaction() {
             sequence: None,
         }],
         {
-            let mut addresses = HashMap::new();
-            addresses.insert("t3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd".to_string(), 1.0);
+            let addresses = vec![("t3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd".to_string(), 1.0)];
             addresses
         },
         None,
@@ -639,10 +622,11 @@ async fn rpc_createrawtransaction() {
         response.is_err(),
         "RPC should err if expiry_height is greater than the MAX_EXPIRY_HEIGHT"
     );
+
     assert!(response
         .unwrap_err()
         .message
-        .contains("Invalid parameter, expiryheight must be nonnegative and less than"));
+        .contains("expiryheight must be nonnegative and less than"));
 
     // Test inputs containing an invalid expiry_height: expiry_height can only be used if NetworkUpgrade::Overwinter is active
     {
@@ -677,8 +661,7 @@ async fn rpc_createrawtransaction() {
                 sequence: None,
             }],
             {
-                let mut addresses: HashMap<String, f64> = HashMap::new();
-                addresses.insert("t3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd".to_string(), 1.0);
+                let addresses = vec![("t3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd".to_string(), 1.0)];
                 addresses
             },
             None,
@@ -691,14 +674,12 @@ async fn rpc_createrawtransaction() {
             response.is_err(),
             "RPC should err if NetworkUpgrade::Overwinter is not active and expiryheight is used."
         );
-        assert!(response
-            .unwrap_err()
-            .message
-            .contains("invalid parameter, expiryheight can only be used if Overwinter is active when the transaction is mined"));
+        assert!(response.unwrap_err().message.contains(
+            "expiryheight can only be used if Overwinter is active when the transaction is mined"
+        ));
     }
 
     // Test transaction creation with invalid ZEC value: more than 21 million
-
     let tx_future = rpc.create_raw_transaction(
         vec![TxInput {
             txid: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
@@ -706,11 +687,10 @@ async fn rpc_createrawtransaction() {
             sequence: None,
         }],
         {
-            let mut addresses: HashMap<String, f64> = HashMap::new();
-            addresses.insert(
+            let addresses = vec![(
                 "t3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd".to_string(),
                 21_000_001.0,
-            );
+            )];
             addresses
         },
         None,
@@ -725,8 +705,7 @@ async fn rpc_createrawtransaction() {
     );
     assert!(response.unwrap_err().message.contains("invalid amount"));
 
-    // Test transaction creation with invalid ZEC value: negative amount
-
+    // Test transaction creation with invalid ZEC value (negative amount)
     let tx_future = rpc.create_raw_transaction(
         vec![TxInput {
             txid: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
@@ -734,8 +713,7 @@ async fn rpc_createrawtransaction() {
             sequence: None,
         }],
         {
-            let mut addresses = HashMap::new();
-            addresses.insert("t3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd".to_string(), -4.0);
+            let addresses = vec![("t3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd".to_string(), -4.0)];
             addresses
         },
         None,
@@ -749,6 +727,185 @@ async fn rpc_createrawtransaction() {
         "RPC should err if inputs contains an invalid ZEC value"
     );
     assert!(response.unwrap_err().message.contains("invalid amount"));
+
+    // Test multiple inputs and outputs
+    let tx_future = rpc.create_raw_transaction(
+        vec![
+            TxInput {
+                txid: "0000000000000000000000000000000000000000000000000000000000000000"
+                    .to_string(),
+                vout: 0,
+                sequence: None,
+            },
+            TxInput {
+                txid: "1111111111111111111111111111111111111111111111111111111111111111"
+                    .to_string(),
+                vout: 1,
+                sequence: None,
+            },
+        ],
+        {
+            let addresses = vec![
+                ("t3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd".to_string(), 0.5),
+                ("t3XyYW8yBFRuMnfvm5KLGFbEVz25kckZXym".to_string(), 0.5),
+            ];
+            addresses
+        },
+        None,
+        None,
+    );
+
+    let response = tx_future.await;
+    assert!(
+        response.is_ok(),
+        "Multiple inputs and outputs should succeed"
+    );
+
+    // Test valid sequence numbers
+    let tx_future = rpc.create_raw_transaction(
+        vec![TxInput {
+            txid: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            vout: 0,
+            sequence: Some(0xffffffff),
+        }],
+        {
+            let addresses = vec![("t3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd".to_string(), 1.0)];
+            addresses
+        },
+        None,
+        None,
+    );
+
+    let response = tx_future.await;
+    assert!(response.is_ok(), "Valid sequence number should succeed");
+
+    // Test very small but valid amounts
+    let tx_future = rpc.create_raw_transaction(
+        vec![TxInput {
+            txid: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            vout: 0,
+            sequence: None,
+        }],
+        {
+            let addresses = vec![(
+                "t3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd".to_string(),
+                0.00000001,
+            )];
+            addresses
+        },
+        None,
+        None,
+    );
+
+    let response = tx_future.await;
+    assert!(response.is_ok(), "Small valid amount should succeed");
+
+    // Test empty inputs array
+    let tx_future = rpc.create_raw_transaction(
+        vec![],
+        {
+            let addresses = vec![("t3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd".to_string(), 1.0)];
+            addresses
+        },
+        None,
+        None,
+    );
+
+    let response = tx_future.await;
+    assert!(response.is_err(), "RPC should err for empty inputs array");
+
+    // Test empty outputs (addresses) array
+    let tx_future = rpc.create_raw_transaction(
+        vec![TxInput {
+            txid: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            vout: 0,
+            sequence: None,
+        }],
+        vec![],
+        None,
+        None,
+    );
+
+    let response = tx_future.await;
+    assert!(response.is_err(), "RPC should err for empty outputs array");
+
+    // Test zero amount output
+    let tx_future = rpc.create_raw_transaction(
+        vec![TxInput {
+            txid: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            vout: 0,
+            sequence: None,
+        }],
+        {
+            let addresses = vec![("t3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd".to_string(), 0.0)];
+            addresses
+        },
+        None,
+        None,
+    );
+
+    let response = tx_future.await;
+    assert!(response.is_err(), "RPC should err for zero amount");
+
+    // Test ZEC amount boundaries (just under 21M)
+    let tx_future = rpc.create_raw_transaction(
+        vec![TxInput {
+            txid: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            vout: 0,
+            sequence: None,
+        }],
+        {
+            let addresses = vec![(
+                "t3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd".to_string(),
+                20_999_999.99999999,
+            )];
+            addresses
+        },
+        None,
+        None,
+    );
+
+    let response = tx_future.await;
+    assert!(response.is_ok(), "Maximum valid ZEC amount should succeed");
+
+    // Test duplicate addresses in outputs
+    let tx_future = rpc.create_raw_transaction(
+        vec![TxInput {
+            txid: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            vout: 0,
+            sequence: None,
+        }],
+        {
+            let addresses = vec![
+                ("t3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd".to_string(), 0.5),
+                ("t3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd".to_string(), 0.5),
+            ];
+            addresses
+        },
+        None,
+        None,
+    );
+
+    let response = tx_future.await;
+    assert!(response.is_err(), "RPC should err for duplicate addresses");
+
+    // Test locktime boundary values
+    let tx_future = rpc.create_raw_transaction(
+        vec![TxInput {
+            txid: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            vout: 0,
+            sequence: None,
+        }],
+        {
+            let addresses = vec![("t3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd".to_string(), 1.0)];
+            addresses
+        },
+        Some(u32::MAX),
+        None,
+    );
+
+    let response = tx_future.await;
+    assert!(response.is_ok(), "Maximum locktime should succeed");
 
     mempool.expect_no_requests().await;
 
@@ -970,7 +1127,7 @@ async fn rpc_getaddresstxids_invalid_arguments() {
     assert_eq!(
         error.message,
         format!(
-            "invalid address \"{}\": parse error: t-addr decoding error",
+            "Invalid Zcash address \"{}\": parse error: t-addr decoding error",
             address.clone()
         )
     );
@@ -1170,9 +1327,10 @@ async fn rpc_getaddressutxos_invalid_arguments() {
         .get_address_utxos(AddressStrings::new(addresses))
         .await
         .unwrap_err();
+    println!("{}", error.clone());
     assert_eq!(
         error.message,
-        format!("invalid address \"{address}\": parse error: t-addr decoding error")
+        format!("Invalid Zcash address \"{address}\": parse error: t-addr decoding error")
     );
 
     mempool.expect_no_requests().await;

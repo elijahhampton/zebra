@@ -458,6 +458,22 @@ async fn test_rpc_response_data_for_network(network: &Network) {
         .await
         .expect("We should have a vector of strings");
     snapshot_rpc_getaddressutxos(get_address_utxos, &settings);
+
+    // `createrawtransaction`
+    let transaction_inputs = vec![TxInput {
+        txid: first_block_first_transaction.hash().encode_hex(),
+        vout: 0,
+        sequence: Some(0xffffffff),
+    }];
+
+    // build address to zec mapping
+    let addresses_and_zec_values = vec![(address.to_string(), 1.0)];
+
+    let create_raw_transaction =
+        rpc.create_raw_transaction(transaction_inputs, addresses_and_zec_values, Some(0), None);
+    let response = create_raw_transaction.await;
+    let raw_tx_id = response.expect("");
+    snapshot_rpc_createrawtransaction(raw_tx_id, &settings);
 }
 
 async fn test_mocked_rpc_response_data_for_network(network: &Network) {
@@ -626,6 +642,10 @@ fn snapshot_rpc_getbestblockhash(tip_hash: GetBlockHash, settings: &insta::Setti
 /// Snapshot `getrawmempool` response, using `cargo insta` and JSON serialization.
 fn snapshot_rpc_getrawmempool(raw_mempool: Vec<String>, settings: &insta::Settings) {
     settings.bind(|| insta::assert_json_snapshot!("get_raw_mempool", raw_mempool));
+}
+
+fn snapshot_rpc_createrawtransaction(raw_tx_id: String, settings: &insta::Settings) {
+    settings.bind(|| insta::assert_json_snapshot!("create_raw_transaction", raw_tx_id));
 }
 
 /// Snapshot `getrawtransaction` response, using `cargo insta` and JSON serialization.
