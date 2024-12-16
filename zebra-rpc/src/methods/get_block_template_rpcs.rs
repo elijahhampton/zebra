@@ -32,35 +32,37 @@ use zebra_network::AddressBookPeers;
 use zebra_node_services::mempool;
 use zebra_state::{ReadRequest, ReadResponse};
 
-use crate::methods::{
-    best_chain_tip_height,
-    errors::MapServerError,
-    get_block_template_rpcs::{
-        constants::{
-            DEFAULT_SOLUTION_RATE_WINDOW_SIZE, GET_BLOCK_TEMPLATE_MEMPOOL_LONG_POLL_INTERVAL,
-            ZCASHD_FUNDING_STREAM_ORDER,
-        },
-        get_block_template::{
-            check_miner_address, check_synced_to_tip, fetch_mempool_transactions,
-            fetch_state_tip_and_local_time, validate_block_proposal,
-        },
-        // TODO: move the types/* modules directly under get_block_template_rpcs,
-        //       and combine any modules with the same names.
-        types::{
-            get_block_template::{
-                proposal::TimeSource, proposal_block_from_template, GetBlockTemplate,
+use crate::{
+    methods::{
+        best_chain_tip_height,
+        get_block_template_rpcs::{
+            constants::{
+                DEFAULT_SOLUTION_RATE_WINDOW_SIZE, GET_BLOCK_TEMPLATE_MEMPOOL_LONG_POLL_INTERVAL,
+                ZCASHD_FUNDING_STREAM_ORDER,
             },
-            get_mining_info,
-            long_poll::LongPollInput,
-            peer_info::PeerInfo,
-            submit_block,
-            subsidy::{BlockSubsidy, FundingStream},
-            unified_address, validate_address, z_validate_address,
+            get_block_template::{
+                check_miner_address, check_synced_to_tip, fetch_mempool_transactions,
+                fetch_state_tip_and_local_time, validate_block_proposal,
+            },
+            // TODO: move the types/* modules directly under get_block_template_rpcs,
+            //       and combine any modules with the same names.
+            types::{
+                get_block_template::{
+                    proposal::TimeSource, proposal_block_from_template, GetBlockTemplate,
+                },
+                get_mining_info,
+                long_poll::LongPollInput,
+                peer_info::PeerInfo,
+                submit_block,
+                subsidy::{BlockSubsidy, FundingStream},
+                unified_address, validate_address, z_validate_address,
+            },
         },
+        height_from_signed_int,
+        hex_data::HexData,
+        GetBlockHash,
     },
-    height_from_signed_int,
-    hex_data::HexData,
-    GetBlockHash, MISSING_BLOCK_ERROR_CODE,
+    server::{self, error::MapError},
 };
 
 pub mod constants;
@@ -584,12 +586,12 @@ where
                 .ready()
                 .and_then(|service| service.call(request))
                 .await
-                .map_server_error()?;
+                .map_error(server::error::LegacyCode::default())?;
 
             match response {
                 zebra_state::ReadResponse::BlockHash(Some(hash)) => Ok(GetBlockHash(hash)),
                 zebra_state::ReadResponse::BlockHash(None) => Err(Error {
-                    code: MISSING_BLOCK_ERROR_CODE,
+                    code: server::error::LegacyCode::InvalidParameter.into(),
                     message: "Block not found".to_string(),
                     data: None,
                 }),
@@ -648,7 +650,13 @@ where
 
             // The loop returns the server long poll ID,
             // which should be different to the client long poll ID.
-            let (server_long_poll_id, chain_tip_and_local_time, mempool_txs, submit_old) = loop {
+            let (
+                server_long_poll_id,
+                chain_tip_and_local_time,
+                mempool_txs,
+                mempool_tx_deps,
+                submit_old,
+            ) = loop {
                 // Check if we are synced to the tip.
                 // The result of this check can change during long polling.
                 //
@@ -688,12 +696,13 @@ where
                 //
                 // Optional TODO:
                 // - add a `MempoolChange` type with an `async changed()` method (like `ChainTip`)
-                let Some(mempool_txs) = fetch_mempool_transactions(mempool.clone(), tip_hash)
-                    .await?
-                    // If the mempool and state responses are out of sync:
-                    // - if we are not long polling, omit mempool transactions from the template,
-                    // - if we are long polling, continue to the next iteration of the loop to make fresh state and mempool requests.
-                    .or_else(|| client_long_poll_id.is_none().then(Vec::new))
+                let Some((mempool_txs, mempool_tx_deps)) =
+                    fetch_mempool_transactions(mempool.clone(), tip_hash)
+                        .await?
+                        // If the mempool and state responses are out of sync:
+                        // - if we are not long polling, omit mempool transactions from the template,
+                        // - if we are long polling, continue to the next iteration of the loop to make fresh state and mempool requests.
+                        .or_else(|| client_long_poll_id.is_none().then(Default::default))
                 else {
                     continue;
                 };
@@ -728,6 +737,7 @@ where
                         server_long_poll_id,
                         chain_tip_and_local_time,
                         mempool_txs,
+                        mempool_tx_deps,
                         submit_old,
                     );
                 }
@@ -842,7 +852,7 @@ where
                                     Is Zebra shutting down?"
                                 );
 
-                                return Err(recv_error).map_server_error();
+                                return Err(recv_error).map_error(server::error::LegacyCode::default());
                             }
                         }
                     }
@@ -888,15 +898,15 @@ where
                 next_block_height,
                 &miner_address,
                 mempool_txs,
+                mempool_tx_deps,
                 debug_like_zcashd,
                 extra_coinbase_data.clone(),
-            )
-            .await;
+            );
 
             tracing::debug!(
                 selected_mempool_tx_hashes = ?mempool_txs
                     .iter()
-                    .map(|tx| tx.transaction.id.mined_id())
+                    .map(|#[cfg(not(test))] tx, #[cfg(test)] (_, tx)| tx.transaction.id.mined_id())
                     .collect::<Vec<_>>(),
                 "selected transactions for the template from the mempool"
             );
@@ -1034,7 +1044,7 @@ where
                     .ready()
                     .and_then(|service| service.call(request))
                     .await
-                    .map_server_error()?;
+                    .map_error(server::error::LegacyCode::default())?;
                 current_block_size = match response {
                     zebra_state::ReadResponse::TipBlockSize(Some(block_size)) => Some(block_size),
                     _ => None,
@@ -1223,13 +1233,14 @@ where
             // Always zero for post-halving blocks
             let founders = Amount::zero();
 
-            let total_block_subsidy = block_subsidy(height, &network).map_server_error()?;
-            let miner_subsidy =
-                miner_subsidy(height, &network, total_block_subsidy).map_server_error()?;
+            let total_block_subsidy =
+                block_subsidy(height, &network).map_error(server::error::LegacyCode::default())?;
+            let miner_subsidy = miner_subsidy(height, &network, total_block_subsidy)
+                .map_error(server::error::LegacyCode::default())?;
 
             let (lockbox_streams, mut funding_streams): (Vec<_>, Vec<_>) =
                 funding_stream_values(height, &network, total_block_subsidy)
-                    .map_server_error()?
+                    .map_error(server::error::LegacyCode::default())?
                     .into_iter()
                     // Separate the funding streams into deferred and non-deferred streams
                     .partition(|(receiver, _)| matches!(receiver, FundingStreamReceiver::Deferred));
@@ -1266,8 +1277,12 @@ where
                 founders: founders.into(),
                 funding_streams,
                 lockbox_streams,
-                funding_streams_total: funding_streams_total.map_server_error()?.into(),
-                lockbox_total: lockbox_total.map_server_error()?.into(),
+                funding_streams_total: funding_streams_total
+                    .map_error(server::error::LegacyCode::default())?
+                    .into(),
+                lockbox_total: lockbox_total
+                    .map_error(server::error::LegacyCode::default())?
+                    .into(),
                 total_block_subsidy: total_block_subsidy.into(),
             })
         }
@@ -1428,7 +1443,10 @@ where
 
             let mut block_hashes = Vec::new();
             for _ in 0..num_blocks {
-                let block_template = rpc.get_block_template(None).await.map_server_error()?;
+                let block_template = rpc
+                    .get_block_template(None)
+                    .await
+                    .map_error(server::error::LegacyCode::default())?;
 
                 let get_block_template::Response::TemplateMode(block_template) = block_template
                 else {
@@ -1444,14 +1462,17 @@ where
                     TimeSource::CurTime,
                     NetworkUpgrade::current(&network, Height(block_template.height)),
                 )
-                .map_server_error()?;
-                let hex_proposal_block =
-                    HexData(proposal_block.zcash_serialize_to_vec().map_server_error()?);
+                .map_error(server::error::LegacyCode::default())?;
+                let hex_proposal_block = HexData(
+                    proposal_block
+                        .zcash_serialize_to_vec()
+                        .map_error(server::error::LegacyCode::default())?,
+                );
 
                 let _submit = rpc
                     .submit_block(hex_proposal_block, None)
                     .await
-                    .map_server_error()?;
+                    .map_error(server::error::LegacyCode::default())?;
 
                 block_hashes.push(GetBlockHash(proposal_block.hash()));
             }

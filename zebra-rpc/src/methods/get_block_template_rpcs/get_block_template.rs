@@ -22,15 +22,15 @@ use zebra_chain::{
 use zebra_consensus::{
     block_subsidy, funding_stream_address, funding_stream_values, miner_subsidy,
 };
-use zebra_node_services::mempool;
+use zebra_node_services::mempool::{self, TransactionDependencies};
 use zebra_state::GetBlockTemplateChainInfo;
 
-use crate::methods::{
-    errors::OkOrServerError,
-    get_block_template_rpcs::{
+use crate::{
+    methods::get_block_template_rpcs::{
         constants::{MAX_ESTIMATED_DISTANCE_TO_NETWORK_CHAIN_TIP, NOT_SYNCED_ERROR_CODE},
         types::{default_roots::DefaultRoots, transaction::TransactionTemplate},
     },
+    server::error::OkOrError,
 };
 
 pub use crate::methods::get_block_template_rpcs::types::get_block_template::*;
@@ -87,13 +87,9 @@ pub fn check_parameters(parameters: &Option<JsonParameters>) -> Result<()> {
 pub fn check_miner_address(
     miner_address: Option<transparent::Address>,
 ) -> Result<transparent::Address> {
-    miner_address.ok_or_else(|| Error {
-        code: ErrorCode::ServerError(0),
-        message: "configure mining.miner_address in zebrad.toml \
-                  with a transparent address"
-            .to_string(),
-        data: None,
-    })
+    miner_address.ok_or_misc_error(
+        "set `mining.miner_address` in `zebrad.toml` to a transparent address".to_string(),
+    )
 }
 
 /// Attempts to validate block proposal against all of the server's
@@ -181,7 +177,7 @@ where
     // but this is ok for an estimate
     let (estimated_distance_to_chain_tip, local_tip_height) = latest_chain_tip
         .estimate_distance_to_network_chain_tip(network)
-        .ok_or_server_error("no chain tip available yet")?;
+        .ok_or_misc_error("no chain tip available yet")?;
 
     if !sync_status.is_close_to_tip()
         || estimated_distance_to_chain_tip > MAX_ESTIMATED_DISTANCE_TO_NETWORK_CHAIN_TIP
@@ -253,7 +249,7 @@ where
 pub async fn fetch_mempool_transactions<Mempool>(
     mempool: Mempool,
     chain_tip_hash: block::Hash,
-) -> Result<Option<Vec<VerifiedUnminedTx>>>
+) -> Result<Option<(Vec<VerifiedUnminedTx>, TransactionDependencies)>>
 where
     Mempool: Service<
             mempool::Request,
@@ -271,8 +267,11 @@ where
             data: None,
         })?;
 
+    // TODO: Order transactions in block templates based on their dependencies
+
     let mempool::Response::FullTransactions {
         transactions,
+        transaction_dependencies,
         last_seen_tip_hash,
     } = response
     else {
@@ -280,7 +279,7 @@ where
     };
 
     // Check that the mempool and state were in sync when we made the requests
-    Ok((last_seen_tip_hash == chain_tip_hash).then_some(transactions))
+    Ok((last_seen_tip_hash == chain_tip_hash).then_some((transactions, transaction_dependencies)))
 }
 
 // - Response processing
